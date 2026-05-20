@@ -1,0 +1,36 @@
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m tak_client
+
+
+
+
+Dependencias a instalar para correrlo utilizando el cubo:  
+
+        python3 -m venv venv
+        source venv/bin/activate
+        pip install -r requirements.txt
+
+OBJ: Leer MAVLink directo desde el CubePilot 
+
+        ls /dev/ttyACM*
+
+Configurar .env:
+
+        TAK_SOURCE=mavlink
+        MAVLINK_CONNECTION=/dev/ttyACM0
+        MAVLINK_BAUDRATE=115200
+        TAK_INTERVAL=1
+
+Ejecutar:
+
+        python -m tak_client
+
+Si corres en Windows PowerShell, usar el puerto COM del CubePilot:
+
+        MAVLINK_CONNECTION=COM3
+
+
+
