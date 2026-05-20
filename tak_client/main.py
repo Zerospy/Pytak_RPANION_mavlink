@@ -37,7 +37,7 @@ class MavlinkPositionWorker(pytak.QueueWorker):
         self.baudrate = int(config.get("MAVLINK_BAUDRATE", "115200"))
         self.heartbeat_timeout = int(config.get("MAVLINK_HEARTBEAT_TIMEOUT", "30"))
         self.message_timeout = int(config.get("MAVLINK_MESSAGE_TIMEOUT", "5"))
-+
+
     async def run(self) -> None:
         LOGGER.info(
             "Connecting to MAVLink connection=%s baud=%s",
