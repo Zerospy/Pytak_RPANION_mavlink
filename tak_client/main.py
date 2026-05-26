@@ -78,7 +78,7 @@ class MavlinkPositionWorker(pytak.QueueWorker):
                 ce=ce,  
                 le=le,
             )
-            await self.put_queue(event)
+            await self.pu t_queue(event)
             LOGGER.info("Sent CoT from MAVLink lat=%s lon=%s hae=%s", lat, lon, hae)
             await asyncio.sleep(self.interval)
 

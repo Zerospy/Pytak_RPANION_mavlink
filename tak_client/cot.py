@@ -27,7 +27,7 @@ def build_position_event_from_values(
     event = ET.Element("event")
     event.set("version", "2.0")
     event.set("uid", config.get("TAK_UID", "pytak-client-001"))
-    event.set("type", "a-f-G-U-C")
+    event.set("type", "a-f-S-U")
     event.set("how", "m-g")
     event.set("time", pytak.cot_time())
     event.set("start", pytak.cot_time())
