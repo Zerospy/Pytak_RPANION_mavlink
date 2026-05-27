@@ -86,6 +86,10 @@ class ChatAnnounceWorker(pytak.QueueWorker):
 class ChatReceiveWorker(pytak.Worker):
     """Lee GeoChat entrante desde la cola RX y lo registra en logs."""
 
+    def __init__(self, rx_queue, tx_queue, config: SectionProxy):
+        super().__init__(rx_queue, config)
+        self.tx_queue = tx_queue
+
     async def handle_data(self, data: bytes) -> None:
         try:
             event = ET.fromstring(data)
@@ -105,12 +109,32 @@ class ChatReceiveWorker(pytak.Worker):
         if chat is None or remarks is None:
             return
 
+        message = (remarks.text or "").strip()
+        sender_callsign = chat.get("senderCallsign", "unknown")
+        chat_room = chat.get("chatroom", chat.get("id", "unknown"))
         LOGGER.info(
             "Received GeoChat from=%s room=%s message=%s",
-            chat.get("senderCallsign", "unknown"),
-            chat.get("chatroom", chat.get("id", "unknown")),
-            remarks.text or "",
+            sender_callsign,
+            chat_room,
+            message,
         )
+
+        own_uid = self.config.get("TAK_UID", "pytak-client-001")
+        own_callsign = self.config.get("TAK_CALLSIGN", "PyTAK Client")
+        if remarks.get("source") == own_uid or sender_callsign == own_callsign:
+            return
+
+        command = self.config.get("TAK_CHAT_STATUS_COMMAND", "Estado").strip()
+        if message.casefold() != command.casefold():
+            return
+
+        response = self.config.get(
+            "TAK_CHAT_STATUS_RESPONSE",
+            "Estado: online, publicando posicion CoT.",
+        )
+        event = build_geochat_event(self.config, response, room=chat_room)
+        await self.tx_queue.put(event)
+        LOGGER.info("Sent GeoChat status response room=%s", chat_room)
 
 
 class MavlinkPositionWorker(pytak.QueueWorker):
@@ -219,7 +243,7 @@ async def main() -> None:
                 [
                     asyncio.create_task(rx_worker.run(), name="pytak-rx"),
                     asyncio.create_task(
-                        ChatReceiveWorker(rx_queue, config).run(),
+                        ChatReceiveWorker(rx_queue, tx_queue, config).run(),
                         name="chat-receive",
                     ),
                 ]
