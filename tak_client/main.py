@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 from configparser import SectionProxy
 
 import pytak
@@ -10,6 +11,42 @@ from .cot import build_position_event, build_position_event_from_values
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def bearing_between_points(
+    previous_lat: float,
+    previous_lon: float,
+    current_lat: float,
+    current_lon: float,
+) -> float:
+    previous_lat_rad = math.radians(previous_lat)
+    current_lat_rad = math.radians(current_lat)
+    delta_lon_rad = math.radians(current_lon - previous_lon)
+
+    x = math.sin(delta_lon_rad) * math.cos(current_lat_rad)
+    y = (
+        math.cos(previous_lat_rad) * math.sin(current_lat_rad)
+        - math.sin(previous_lat_rad)
+        * math.cos(current_lat_rad)
+        * math.cos(delta_lon_rad)
+    )
+    return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+
+
+def course_speed_from_global_position(msg) -> tuple[float | None, float | None]:
+    vx = getattr(msg, "vx", None)
+    vy = getattr(msg, "vy", None)
+    if vx is None or vy is None:
+        return None, None
+
+    north_mps = vx / 100.0
+    east_mps = vy / 100.0
+    speed_mps = math.hypot(north_mps, east_mps)
+    if speed_mps < 0.05:
+        return None, speed_mps
+
+    course = (math.degrees(math.atan2(east_mps, north_mps)) + 360.0) % 360.0
+    return course, speed_mps
 
 
 class PositionWorker(pytak.QueueWorker):
@@ -37,6 +74,7 @@ class MavlinkPositionWorker(pytak.QueueWorker):
         self.baudrate = int(config.get("MAVLINK_BAUDRATE", "115200"))
         self.heartbeat_timeout = int(config.get("MAVLINK_HEARTBEAT_TIMEOUT", "30"))
         self.message_timeout = int(config.get("MAVLINK_MESSAGE_TIMEOUT", "5"))
+        self.previous_position: tuple[float, float] | None = None
 
     async def run(self) -> None:
         LOGGER.info(
@@ -69,6 +107,11 @@ class MavlinkPositionWorker(pytak.QueueWorker):
             hae = msg.alt / 1000.0
             ce = self.config.get("TAK_CE", "10.0")
             le = self.config.get("TAK_LE", "10.0")
+            course, speed = course_speed_from_global_position(msg)
+            if course is None and self.previous_position is not None:
+                previous_lat, previous_lon = self.previous_position
+                course = bearing_between_points(previous_lat, previous_lon, lat, lon)
+            self.previous_position = (lat, lon)
 
             event = build_position_event_from_values(
                 config=self.config,
@@ -77,9 +120,18 @@ class MavlinkPositionWorker(pytak.QueueWorker):
                 hae=hae,
                 ce=ce,  
                 le=le,
+                course=round(course, 1) if course is not None else None,
+                speed=round(speed, 2) if speed is not None else None,
             )
-            await self.pu t_queue(event)
-            LOGGER.info("Sent CoT from MAVLink lat=%s lon=%s hae=%s", lat, lon, hae)
+            await self.put_queue(event)
+            LOGGER.info(
+                "Sent CoT from MAVLink lat=%s lon=%s hae=%s course=%s speed=%s",
+                lat,
+                lon,
+                hae,
+                course,
+                speed,
+            )
             await asyncio.sleep(self.interval)
 
 

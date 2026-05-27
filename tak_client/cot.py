@@ -23,6 +23,8 @@ def build_position_event_from_values(
     hae: Union[float, str],
     ce: Union[float, str] = "10.0",
     le: Union[float, str] = "10.0",
+    course: Union[float, str, None] = None,
+    speed: Union[float, str, None] = None,
 ) -> bytes:
     event = ET.Element("event")
     event.set("version", "2.0")
@@ -43,5 +45,20 @@ def build_position_event_from_values(
     detail = ET.SubElement(event, "detail")
     contact = ET.SubElement(detail, "contact")
     contact.set("callsign", config.get("TAK_CALLSIGN", "Cliente PyTAK"))
+
+    group = ET.SubElement(detail, "__group")
+    group.set("name", config.get("TAK_GROUP_NAME", "Cyan"))
+    group.set("role", config.get("TAK_GROUP_ROLE", "Team Member"))
+
+    takv = ET.SubElement(detail, "takv")
+    takv.set("device", config.get("TAK_PLATFORM", "PyTAK RPANION"))
+    takv.set("platform", config.get("TAK_PLATFORM", "PyTAK RPANION"))
+    takv.set("version", config.get("TAK_VERSION", "1.0"))
+
+    if course is not None:
+        track = ET.SubElement(detail, "track")
+        track.set("course", str(course))
+        if speed is not None:
+            track.set("speed", str(speed))
 
     return ET.tostring(event)
