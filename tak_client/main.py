@@ -2,12 +2,13 @@ import asyncio
 import logging
 import math
 from configparser import SectionProxy
+import xml.etree.ElementTree as ET
 
 import pytak
 from pymavlink import mavutil
 
 from .config import load_config
-from .cot import build_position_event, build_position_event_from_values
+from .cot import build_geochat_event, build_position_event, build_position_event_from_values
 
 
 LOGGER = logging.getLogger(__name__)
@@ -62,6 +63,54 @@ class PositionWorker(pytak.QueueWorker):
             await self.put_queue(event)
             LOGGER.info("Sent CoT position event uid=%s", self.config.get("TAK_UID"))
             await asyncio.sleep(self.interval)
+
+
+class ChatAnnounceWorker(pytak.QueueWorker):
+    """Envia un GeoChat inicial para que otros clientes vean actividad de chat."""
+
+    async def run(self) -> None:
+        message = self.config.get("TAK_CHAT_ANNOUNCE", "").strip()
+        if message:
+            await asyncio.sleep(2)
+            event = build_geochat_event(self.config, message)
+            await self.put_queue(event)
+            LOGGER.info(
+                "Sent GeoChat announce room=%s",
+                self.config.get("TAK_CHAT_ROOM", "All Chat Rooms"),
+            )
+
+        while True:
+            await asyncio.sleep(3600)
+
+
+class ChatReceiveWorker(pytak.Worker):
+    """Lee GeoChat entrante desde la cola RX y lo registra en logs."""
+
+    async def handle_data(self, data: bytes) -> None:
+        try:
+            event = ET.fromstring(data)
+        except ET.ParseError:
+            LOGGER.debug("Ignoring non-XML RX payload")
+            return
+
+        if event.get("type") != "b-t-f":
+            return
+
+        detail = event.find("detail")
+        if detail is None:
+            return
+
+        chat = detail.find("__chat")
+        remarks = detail.find("remarks")
+        if chat is None or remarks is None:
+            return
+
+        LOGGER.info(
+            "Received GeoChat from=%s room=%s message=%s",
+            chat.get("senderCallsign", "unknown"),
+            chat.get("chatroom", chat.get("id", "unknown")),
+            remarks.text or "",
+        )
 
 
 class MavlinkPositionWorker(pytak.QueueWorker):
@@ -143,12 +192,51 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    clitool = pytak.CLITool(config)
-    await clitool.setup()
+    reader, writer = await pytak.protocol_factory(config)
+    max_out_queue = int(config.get("MAX_OUT_QUEUE") or pytak.DEFAULT_MAX_OUT_QUEUE)
+    max_in_queue = int(config.get("MAX_IN_QUEUE") or pytak.DEFAULT_MAX_IN_QUEUE)
+    tx_queue = asyncio.Queue(max_out_queue)
+    rx_queue = asyncio.Queue(max_in_queue)
+
+    tx_worker = pytak.TXWorker(tx_queue, config, writer)
     source = config.get("TAK_SOURCE", "static").strip().lower()
     worker_cls = MavlinkPositionWorker if source == "mavlink" else PositionWorker
-    clitool.add_tasks({worker_cls(clitool.tx_queue, config)})
-    await clitool.run()
+    tasks = [
+        asyncio.create_task(tx_worker.run(), name="pytak-tx"),
+        asyncio.create_task(worker_cls(tx_queue, config).run(), name="position-source"),
+    ]
+
+    if config.getboolean("TAK_CHAT_ENABLE", fallback=False):
+        tasks.append(
+            asyncio.create_task(
+                ChatAnnounceWorker(tx_queue, config).run(),
+                name="chat-announce",
+            )
+        )
+        if reader is not None:
+            rx_worker = pytak.RXWorker(rx_queue, config, reader)
+            tasks.extend(
+                [
+                    asyncio.create_task(rx_worker.run(), name="pytak-rx"),
+                    asyncio.create_task(
+                        ChatReceiveWorker(rx_queue, config).run(),
+                        name="chat-receive",
+                    ),
+                ]
+            )
+        else:
+            LOGGER.warning("TAK_CHAT_ENABLE=1 but COT_URL is write-only; chat RX disabled")
+
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    for task in pending:
+        task.cancel()
+    for task in done:
+        if task.cancelled():
+            continue
+        exc = task.exception()
+        if exc is not None:
+            raise exc
+        raise RuntimeError(f"Worker exited unexpectedly: {task.get_name()}")
 
 
 def run() -> None:
