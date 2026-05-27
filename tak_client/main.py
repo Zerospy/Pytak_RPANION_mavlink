@@ -1,10 +1,13 @@
 import asyncio
 import logging
 import math
+import socket
 from configparser import SectionProxy
+from urllib.parse import urlparse, urlunparse
 import xml.etree.ElementTree as ET
 
 import pytak
+from pytak.asyncio_dgram import from_socket
 from pymavlink import mavutil
 
 from .config import load_config
@@ -48,6 +51,31 @@ def course_speed_from_global_position(msg) -> tuple[float | None, float | None]:
 
     course = (math.degrees(math.atan2(east_mps, north_mps)) + 360.0) % 360.0
     return course, speed_mps
+
+
+def udp_write_only_url(raw_url: str) -> str:
+    cot_url = urlparse(raw_url)
+    if "udp" not in cot_url.scheme or "+wo" in cot_url.scheme:
+        return raw_url
+
+    return urlunparse(cot_url._replace(scheme=f"{cot_url.scheme}+wo"))
+
+
+async def create_udp_bind_all_reader(raw_url: str):
+    cot_url = urlparse(raw_url)
+    if "udp" not in cot_url.scheme or cot_url.port is None:
+        return None
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except AttributeError:
+        pass
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.bind(("0.0.0.0", cot_url.port))
+    LOGGER.info("Listening for UDP CoT on 0.0.0.0:%s", cot_url.port)
+    return await from_socket(sock)
 
 
 class PositionWorker(pytak.QueueWorker):
@@ -224,7 +252,23 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    original_cot_url = config.get("COT_URL", pytak.DEFAULT_COT_URL)
+    use_udp_bind_all = (
+        config.getboolean("TAK_CHAT_ENABLE", fallback=False)
+        and config.getboolean("TAK_CHAT_UDP_BIND_ALL", fallback=True)
+        and "udp" in urlparse(original_cot_url).scheme
+        and "+wo" not in urlparse(original_cot_url).scheme
+    )
+
+    if use_udp_bind_all:
+        config["COT_URL"] = udp_write_only_url(original_cot_url)
+
     reader, writer = await pytak.protocol_factory(config)
+
+    if use_udp_bind_all:
+        config["COT_URL"] = original_cot_url
+        reader = await create_udp_bind_all_reader(original_cot_url)
+
     max_out_queue = int(config.get("MAX_OUT_QUEUE") or pytak.DEFAULT_MAX_OUT_QUEUE)
     max_in_queue = int(config.get("MAX_IN_QUEUE") or pytak.DEFAULT_MAX_IN_QUEUE)
     tx_queue = asyncio.Queue(max_out_queue)
