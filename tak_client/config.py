@@ -46,6 +46,7 @@ def load_config() -> SectionProxy:
             "TAK_CHAT_STATUS_RESPONSE",
             "Estado: online, publicando posicion CoT.",
         ),
+        "TAK_CHAT_DEBUG_RX": os.getenv("TAK_CHAT_DEBUG_RX", "0"),
         "TAK_SOURCE": os.getenv("TAK_SOURCE", "static"),
         "MAVLINK_CONNECTION": os.getenv("MAVLINK_CONNECTION", "/dev/ttyACM0"),
         "MAVLINK_BAUDRATE": os.getenv("MAVLINK_BAUDRATE", "115200"),

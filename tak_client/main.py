@@ -97,7 +97,15 @@ class ChatReceiveWorker(pytak.Worker):
             LOGGER.debug("Ignoring non-XML RX payload")
             return
 
-        if event.get("type") != "b-t-f":
+        event_type = event.get("type", "")
+        if self.config.getboolean("TAK_CHAT_DEBUG_RX", fallback=False):
+            LOGGER.info(
+                "RX CoT event type=%s uid=%s",
+                event_type,
+                event.get("uid", ""),
+            )
+
+        if event_type != "b-t-f":
             return
 
         detail = event.find("detail")
