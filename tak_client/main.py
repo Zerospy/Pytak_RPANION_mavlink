@@ -53,6 +53,14 @@ def course_speed_from_global_position(msg) -> tuple[float | None, float | None]:
     return course, speed_mps
 
 
+def extract_cot_xml(data: bytes) -> bytes | None:
+    start = data.find(b"<event")
+    end = data.find(b"</event>")
+    if start == -1 or end == -1:
+        return None
+    return data[start : end + len(b"</event>")]
+
+
 def udp_write_only_url(raw_url: str) -> str:
     cot_url = urlparse(raw_url)
     if "udp" not in cot_url.scheme or "+wo" in cot_url.scheme:
@@ -119,10 +127,15 @@ class ChatReceiveWorker(pytak.Worker):
         self.tx_queue = tx_queue
 
     async def handle_data(self, data: bytes) -> None:
+        cot_xml = extract_cot_xml(data)
+        if cot_xml is None:
+            LOGGER.debug("Ignoring RX payload without CoT XML")
+            return
+
         try:
-            event = ET.fromstring(data)
+            event = ET.fromstring(cot_xml)
         except ET.ParseError:
-            LOGGER.debug("Ignoring non-XML RX payload")
+            LOGGER.warning("Could not parse RX CoT XML: %r", cot_xml[:200])
             return
 
         event_type = event.get("type", "")
