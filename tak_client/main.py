@@ -127,9 +127,11 @@ class ChatReceiveWorker(pytak.Worker):
         self.tx_queue = tx_queue
 
     async def handle_data(self, data: bytes) -> None:
+        debug_rx = self.config.getboolean("TAK_CHAT_DEBUG_RX", fallback=False)
         cot_xml = extract_cot_xml(data)
         if cot_xml is None:
-            LOGGER.debug("Ignoring RX payload without CoT XML")
+            if debug_rx:
+                LOGGER.info("RX payload without CoT XML: %r", data[:200])
             return
 
         try:
@@ -139,7 +141,7 @@ class ChatReceiveWorker(pytak.Worker):
             return
 
         event_type = event.get("type", "")
-        if self.config.getboolean("TAK_CHAT_DEBUG_RX", fallback=False):
+        if debug_rx:
             LOGGER.info(
                 "RX CoT event type=%s uid=%s",
                 event_type,
@@ -156,6 +158,8 @@ class ChatReceiveWorker(pytak.Worker):
         chat = detail.find("__chat")
         remarks = detail.find("remarks")
         if chat is None or remarks is None:
+            if debug_rx:
+                LOGGER.info("RX GeoChat missing __chat or remarks: %r", cot_xml[:400])
             return
 
         message = (remarks.text or "").strip()
@@ -184,6 +188,20 @@ class ChatReceiveWorker(pytak.Worker):
         event = build_geochat_event(self.config, response, room=chat_room)
         await self.tx_queue.put(event)
         LOGGER.info("Sent GeoChat status response room=%s", chat_room)
+
+
+class ChatDatagramReceiveWorker:
+    """Lee datagramas UDP CoT directamente y los procesa como GeoChat."""
+
+    def __init__(self, reader, tx_queue, config: SectionProxy):
+        self.reader = reader
+        self.chat_worker = ChatReceiveWorker(asyncio.Queue(), tx_queue, config)
+
+    async def run(self) -> None:
+        LOGGER.info("Running: %s", self.__class__.__name__)
+        while True:
+            data, _ = await self.reader.recv()
+            await self.chat_worker.handle_data(data)
 
 
 class MavlinkPositionWorker(pytak.QueueWorker):
@@ -303,16 +321,24 @@ async def main() -> None:
             )
         )
         if reader is not None:
-            rx_worker = pytak.RXWorker(rx_queue, config, reader)
-            tasks.extend(
-                [
-                    asyncio.create_task(rx_worker.run(), name="pytak-rx"),
+            if use_udp_bind_all:
+                tasks.append(
                     asyncio.create_task(
-                        ChatReceiveWorker(rx_queue, tx_queue, config).run(),
-                        name="chat-receive",
-                    ),
-                ]
-            )
+                        ChatDatagramReceiveWorker(reader, tx_queue, config).run(),
+                        name="chat-udp-receive",
+                    )
+                )
+            else:
+                rx_worker = pytak.RXWorker(rx_queue, config, reader)
+                tasks.extend(
+                    [
+                        asyncio.create_task(rx_worker.run(), name="pytak-rx"),
+                        asyncio.create_task(
+                            ChatReceiveWorker(rx_queue, tx_queue, config).run(),
+                            name="chat-receive",
+                        ),
+                    ]
+                )
         else:
             LOGGER.warning("TAK_CHAT_ENABLE=1 but COT_URL is write-only; chat RX disabled")
 
