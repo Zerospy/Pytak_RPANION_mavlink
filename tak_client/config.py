@@ -41,6 +41,10 @@ def load_config() -> SectionProxy:
         "TAK_CHAT_ENABLE": os.getenv("TAK_CHAT_ENABLE", "0"),
         "TAK_CHAT_ROOM": os.getenv("TAK_CHAT_ROOM", "All Chat Rooms"),
         "TAK_CHAT_ANNOUNCE": os.getenv("TAK_CHAT_ANNOUNCE", ""),
+        "TAK_CHAT_ANNOUNCE_POSITION_TIMEOUT": os.getenv(
+            "TAK_CHAT_ANNOUNCE_POSITION_TIMEOUT",
+            "10",
+        ),
         "TAK_CHAT_STATUS_COMMAND": os.getenv("TAK_CHAT_STATUS_COMMAND", "Estado"),
         "TAK_CHAT_STATUS_RESPONSE": os.getenv(
             "TAK_CHAT_STATUS_RESPONSE",

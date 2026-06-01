@@ -17,6 +17,23 @@ from .cot import build_geochat_event, build_position_event, build_position_event
 LOGGER = logging.getLogger(__name__)
 
 
+class PositionState:
+    def __init__(self, config: SectionProxy):
+        self.lat = float(config.get("TAK_LAT", "0"))
+        self.lon = float(config.get("TAK_LON", "0"))
+        self.hae = float(config.get("TAK_HAE", "0"))
+        self.updated = asyncio.Event()
+
+    def update(self, lat: float, lon: float, hae: float) -> None:
+        self.lat = lat
+        self.lon = lon
+        self.hae = hae
+        self.updated.set()
+
+    def format_position(self) -> str:
+        return f"{self.lat:.7f}, {self.lon:.7f}, hae={self.hae:.1f}m"
+
+
 def bearing_between_points(
     previous_lat: float,
     previous_lon: float,
@@ -89,12 +106,18 @@ async def create_udp_bind_all_reader(raw_url: str):
 class PositionWorker(pytak.QueueWorker):
     """Genera una posicion simple recurrente."""
 
-    def __init__(self, tx_queue, config: SectionProxy):
+    def __init__(self, tx_queue, config: SectionProxy, position_state: PositionState):
         super().__init__(tx_queue, config)
         self.interval = int(config.get("TAK_INTERVAL", "10"))
+        self.position_state = position_state
 
     async def run(self) -> None:
         while True:
+            self.position_state.update(
+                float(self.config.get("TAK_LAT", "0")),
+                float(self.config.get("TAK_LON", "0")),
+                float(self.config.get("TAK_HAE", "0")),
+            )
             event = build_position_event(self.config)
             await self.put_queue(event)
             LOGGER.info("Sent CoT position event uid=%s", self.config.get("TAK_UID"))
@@ -104,10 +127,20 @@ class PositionWorker(pytak.QueueWorker):
 class ChatAnnounceWorker(pytak.QueueWorker):
     """Envia un GeoChat inicial para que otros clientes vean actividad de chat."""
 
+    def __init__(self, tx_queue, config: SectionProxy, position_state: PositionState):
+        super().__init__(tx_queue, config)
+        self.position_state = position_state
+
     async def run(self) -> None:
         message = self.config.get("TAK_CHAT_ANNOUNCE", "").strip()
         if message:
-            await asyncio.sleep(2)
+            timeout = float(self.config.get("TAK_CHAT_ANNOUNCE_POSITION_TIMEOUT", "10"))
+            try:
+                await asyncio.wait_for(self.position_state.updated.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                LOGGER.warning("Sending GeoChat announce with fallback configured position")
+
+            message = f"{message} | Posicion: {self.position_state.format_position()}"
             event = build_geochat_event(self.config, message)
             await self.put_queue(event)
             LOGGER.info(
@@ -229,7 +262,7 @@ class ChatDatagramReceiveWorker:
 class MavlinkPositionWorker(pytak.QueueWorker):
     """Lee posicion MAVLink desde el CubePilot y la publica como CoT."""
 
-    def __init__(self, tx_queue, config: SectionProxy):
+    def __init__(self, tx_queue, config: SectionProxy, position_state: PositionState):
         super().__init__(tx_queue, config)
         self.interval = float(config.get("TAK_INTERVAL", "1"))
         self.connection = config.get("MAVLINK_CONNECTION", "/dev/ttyACM0")
@@ -237,6 +270,7 @@ class MavlinkPositionWorker(pytak.QueueWorker):
         self.heartbeat_timeout = int(config.get("MAVLINK_HEARTBEAT_TIMEOUT", "30"))
         self.message_timeout = int(config.get("MAVLINK_MESSAGE_TIMEOUT", "5"))
         self.previous_position: tuple[float, float] | None = None
+        self.position_state = position_state
 
     async def run(self) -> None:
         LOGGER.info(
@@ -267,6 +301,7 @@ class MavlinkPositionWorker(pytak.QueueWorker):
             lat = msg.lat / 1e7
             lon = msg.lon / 1e7
             hae = msg.alt / 1000.0
+            self.position_state.update(lat, lon, hae)
             ce = self.config.get("TAK_CE", "10.0")
             le = self.config.get("TAK_LE", "10.0")
             course, speed = course_speed_from_global_position(msg)
@@ -338,17 +373,21 @@ async def main() -> None:
     rx_queue = asyncio.Queue(max_in_queue)
 
     tx_worker = pytak.TXWorker(tx_queue, config, writer)
+    position_state = PositionState(config)
     source = config.get("TAK_SOURCE", "static").strip().lower()
     worker_cls = MavlinkPositionWorker if source == "mavlink" else PositionWorker
     tasks = [
         asyncio.create_task(tx_worker.run(), name="pytak-tx"),
-        asyncio.create_task(worker_cls(tx_queue, config).run(), name="position-source"),
+        asyncio.create_task(
+            worker_cls(tx_queue, config, position_state).run(),
+            name="position-source",
+        ),
     ]
 
     if config.getboolean("TAK_CHAT_ENABLE", fallback=False):
         tasks.append(
             asyncio.create_task(
-                ChatAnnounceWorker(tx_queue, config).run(),
+                ChatAnnounceWorker(tx_queue, config, position_state).run(),
                 name="chat-announce",
             )
         )
