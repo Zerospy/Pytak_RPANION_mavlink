@@ -141,11 +141,6 @@ class ChatReceiveWorker(pytak.Worker):
         if not command:
             return False
 
-        own_uid = self.config.get("TAK_UID", "pytak-client-001").encode()
-        own_callsign = self.config.get("TAK_CALLSIGN", "PyTAK Client").encode()
-        if own_uid in data or own_callsign in data:
-            return False
-
         if command.casefold() not in data.decode(errors="ignore").casefold():
             return False
 
@@ -225,7 +220,9 @@ class ChatDatagramReceiveWorker:
     async def run(self) -> None:
         LOGGER.info("Running: %s", self.__class__.__name__)
         while True:
-            data, _ = await self.reader.recv()
+            data, addr = await self.reader.recv()
+            if self.chat_worker.config.getboolean("TAK_CHAT_DEBUG_RX", fallback=False):
+                LOGGER.info("RX UDP datagram from=%s bytes=%s", addr, len(data))
             await self.chat_worker.handle_data(data)
 
 
