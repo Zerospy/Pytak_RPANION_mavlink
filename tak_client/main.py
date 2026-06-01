@@ -284,11 +284,21 @@ async def main() -> None:
     )
 
     original_cot_url = config.get("COT_URL", pytak.DEFAULT_COT_URL)
+    cot_url_scheme = urlparse(original_cot_url).scheme
     use_udp_bind_all = (
         config.getboolean("TAK_CHAT_ENABLE", fallback=False)
         and config.getboolean("TAK_CHAT_UDP_BIND_ALL", fallback=True)
-        and "udp" in urlparse(original_cot_url).scheme
+        and "udp" in cot_url_scheme
         and "+wo" not in urlparse(original_cot_url).scheme
+    )
+    LOGGER.info(
+        "Chat UDP config: COT_URL=%s scheme=%s TAK_CHAT_ENABLE=%s "
+        "TAK_CHAT_UDP_BIND_ALL=%s use_udp_bind_all=%s",
+        original_cot_url,
+        cot_url_scheme,
+        config.getboolean("TAK_CHAT_ENABLE", fallback=False),
+        config.getboolean("TAK_CHAT_UDP_BIND_ALL", fallback=True),
+        use_udp_bind_all,
     )
 
     if use_udp_bind_all:
@@ -322,6 +332,7 @@ async def main() -> None:
         )
         if reader is not None:
             if use_udp_bind_all:
+                LOGGER.info("Using direct UDP datagram chat receiver")
                 tasks.append(
                     asyncio.create_task(
                         ChatDatagramReceiveWorker(reader, tx_queue, config).run(),
