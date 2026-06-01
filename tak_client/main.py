@@ -126,18 +126,47 @@ class ChatReceiveWorker(pytak.Worker):
         super().__init__(rx_queue, config)
         self.tx_queue = tx_queue
 
+    async def send_status_response(self, room: str | None = None) -> None:
+        response = self.config.get(
+            "TAK_CHAT_STATUS_RESPONSE",
+            "Estado: online, publicando posicion CoT.",
+        )
+        chat_room = room or self.config.get("TAK_CHAT_ROOM", "All Chat Rooms")
+        event = build_geochat_event(self.config, response, room=chat_room)
+        await self.tx_queue.put(event)
+        LOGGER.info("Sent GeoChat status response room=%s", chat_room)
+
+    async def handle_raw_status_command(self, data: bytes) -> bool:
+        command = self.config.get("TAK_CHAT_STATUS_COMMAND", "Estado").strip()
+        if not command:
+            return False
+
+        own_uid = self.config.get("TAK_UID", "pytak-client-001").encode()
+        own_callsign = self.config.get("TAK_CALLSIGN", "PyTAK Client").encode()
+        if own_uid in data or own_callsign in data:
+            return False
+
+        if command.casefold() not in data.decode(errors="ignore").casefold():
+            return False
+
+        LOGGER.info("Received raw chat status command=%s", command)
+        await self.send_status_response()
+        return True
+
     async def handle_data(self, data: bytes) -> None:
         debug_rx = self.config.getboolean("TAK_CHAT_DEBUG_RX", fallback=False)
         cot_xml = extract_cot_xml(data)
         if cot_xml is None:
             if debug_rx:
                 LOGGER.info("RX payload without CoT XML: %r", data[:200])
+            await self.handle_raw_status_command(data)
             return
 
         try:
             event = ET.fromstring(cot_xml)
         except ET.ParseError:
             LOGGER.warning("Could not parse RX CoT XML: %r", cot_xml[:200])
+            await self.handle_raw_status_command(data)
             return
 
         event_type = event.get("type", "")
@@ -149,6 +178,7 @@ class ChatReceiveWorker(pytak.Worker):
             )
 
         if event_type != "b-t-f":
+            await self.handle_raw_status_command(data)
             return
 
         detail = event.find("detail")
@@ -179,15 +209,10 @@ class ChatReceiveWorker(pytak.Worker):
 
         command = self.config.get("TAK_CHAT_STATUS_COMMAND", "Estado").strip()
         if message.casefold() != command.casefold():
+            await self.handle_raw_status_command(data)
             return
 
-        response = self.config.get(
-            "TAK_CHAT_STATUS_RESPONSE",
-            "Estado: online, publicando posicion CoT.",
-        )
-        event = build_geochat_event(self.config, response, room=chat_room)
-        await self.tx_queue.put(event)
-        LOGGER.info("Sent GeoChat status response room=%s", chat_room)
+        await self.send_status_response(room=chat_room)
 
 
 class ChatDatagramReceiveWorker:
