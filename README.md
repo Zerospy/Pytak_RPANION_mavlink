@@ -1,7 +1,7 @@
 # Cliente TAK basico con PyTAK
 
-Estructura minima para levantar un cliente TAK que emite eventos CoT periodicos usando PyTAK.
-Puede emitir una posicion fija para pruebas o leer `GLOBAL_POSITION_INT` directo desde un CubePilot por MAVLink.
+Estructura minima para levantar un cliente TAK que emite eventos CoT periodicos usando PyTAK
+Puede emitir una posicion fija para pruebas o leer posicion directo desde un CubePilot por MAVLink.
 
 ## Requisitos
 
@@ -43,7 +43,12 @@ TAK_CE=10
 TAK_LE=10
 MAVLINK_CONNECTION=/dev/ttyACM0
 MAVLINK_BAUDRATE=115200
+MAVLINK_POSITION_MESSAGES=GLOBAL_POSITION_INT,GPS_RAW_INT
 ```
+
+Si cambiaste a un GPS CAN/DroneCAN como HERE+ y TAK dejo de recibir posicion,
+deja `MAVLINK_POSITION_MESSAGES=GLOBAL_POSITION_INT,GPS_RAW_INT`. El cliente
+usara `GPS_RAW_INT` como respaldo cuando no llegue `GLOBAL_POSITION_INT`.
 
 En Linux/WSL puedes revisar el puerto con:
 

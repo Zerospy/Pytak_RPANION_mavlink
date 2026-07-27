@@ -57,6 +57,10 @@ def load_config() -> SectionProxy:
         "MAVLINK_BAUDRATE": os.getenv("MAVLINK_BAUDRATE", "115200"),
         "MAVLINK_HEARTBEAT_TIMEOUT": os.getenv("MAVLINK_HEARTBEAT_TIMEOUT", "30"),
         "MAVLINK_MESSAGE_TIMEOUT": os.getenv("MAVLINK_MESSAGE_TIMEOUT", "5"),
+        "MAVLINK_POSITION_MESSAGES": os.getenv(
+            "MAVLINK_POSITION_MESSAGES",
+            "GLOBAL_POSITION_INT,GPS_RAW_INT",
+        ),
     }
 
     for key in (

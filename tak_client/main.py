@@ -70,6 +70,56 @@ def course_speed_from_global_position(msg) -> tuple[float | None, float | None]:
     return course, speed_mps
 
 
+def course_speed_from_gps_raw(msg) -> tuple[float | None, float | None]:
+    velocity = getattr(msg, "vel", None)
+    cog = getattr(msg, "cog", None)
+    speed_mps = None
+    course = None
+
+    if velocity is not None and velocity != 65535:
+        speed_mps = velocity / 100.0
+
+    if cog is not None and cog != 65535:
+        course = cog / 100.0
+
+    return course, speed_mps
+
+
+def extract_position_from_mavlink(msg) -> tuple[float, float, float, float | None, float | None] | None:
+    msg_type = msg.get_type()
+
+    if msg_type == "GLOBAL_POSITION_INT":
+        lat = msg.lat / 1e7
+        lon = msg.lon / 1e7
+        hae = msg.alt / 1000.0
+        course, speed = course_speed_from_global_position(msg)
+        return lat, lon, hae, course, speed
+
+    if msg_type == "GPS_RAW_INT":
+        fix_type = getattr(msg, "fix_type", 0)
+        satellites = getattr(msg, "satellites_visible", None)
+        if fix_type < 2:
+            LOGGER.warning(
+                "GPS_RAW_INT has no usable fix fix_type=%s satellites=%s",
+                fix_type,
+                satellites,
+            )
+            return None
+
+        lat = msg.lat / 1e7
+        lon = msg.lon / 1e7
+        hae = msg.alt / 1000.0
+        if lat == 0.0 and lon == 0.0:
+            LOGGER.warning("GPS_RAW_INT reported empty coordinates lat=0 lon=0")
+            return None
+
+        course, speed = course_speed_from_gps_raw(msg)
+        return lat, lon, hae, course, speed
+
+    LOGGER.warning("Unsupported MAVLink position message type=%s", msg_type)
+    return None
+
+
 def extract_cot_xml(data: bytes) -> bytes | None:
     start = data.find(b"<event")
     end = data.find(b"</event>")
@@ -269,14 +319,23 @@ class MavlinkPositionWorker(pytak.QueueWorker):
         self.baudrate = int(config.get("MAVLINK_BAUDRATE", "115200"))
         self.heartbeat_timeout = int(config.get("MAVLINK_HEARTBEAT_TIMEOUT", "30"))
         self.message_timeout = int(config.get("MAVLINK_MESSAGE_TIMEOUT", "5"))
+        self.position_messages = [
+            message.strip()
+            for message in config.get(
+                "MAVLINK_POSITION_MESSAGES",
+                "GLOBAL_POSITION_INT,GPS_RAW_INT",
+            ).split(",")
+            if message.strip()
+        ]
         self.previous_position: tuple[float, float] | None = None
         self.position_state = position_state
 
     async def run(self) -> None:
         LOGGER.info(
-            "Connecting to MAVLink connection=%s baud=%s",
+            "Connecting to MAVLink connection=%s baud=%s position_messages=%s",
             self.connection,
             self.baudrate,
+            ",".join(self.position_messages),
         )
         mav = mavutil.mavlink_connection(self.connection, baud=self.baudrate)
         await asyncio.to_thread(mav.wait_heartbeat, timeout=self.heartbeat_timeout)
@@ -289,22 +348,26 @@ class MavlinkPositionWorker(pytak.QueueWorker):
         while True:
             msg = await asyncio.to_thread(
                 mav.recv_match,
-                type="GLOBAL_POSITION_INT",
+                type=self.position_messages,
                 blocking=True,
                 timeout=self.message_timeout,
             )
 
             if msg is None:
-                LOGGER.warning("No GLOBAL_POSITION_INT received from MAVLink")
+                LOGGER.warning(
+                    "No MAVLink position message received types=%s",
+                    ",".join(self.position_messages),
+                )
                 continue
 
-            lat = msg.lat / 1e7
-            lon = msg.lon / 1e7
-            hae = msg.alt / 1000.0
+            position = extract_position_from_mavlink(msg)
+            if position is None:
+                continue
+
+            lat, lon, hae, course, speed = position
             self.position_state.update(lat, lon, hae)
             ce = self.config.get("TAK_CE", "10.0")
             le = self.config.get("TAK_LE", "10.0")
-            course, speed = course_speed_from_global_position(msg)
             if course is None and self.previous_position is not None:
                 previous_lat, previous_lon = self.previous_position
                 course = bearing_between_points(previous_lat, previous_lon, lat, lon)
@@ -322,7 +385,8 @@ class MavlinkPositionWorker(pytak.QueueWorker):
             )
             await self.put_queue(event)
             LOGGER.info(
-                "Sent CoT from MAVLink lat=%s lon=%s hae=%s course=%s speed=%s",
+                "Sent CoT from MAVLink type=%s lat=%s lon=%s hae=%s course=%s speed=%s",
+                msg.get_type(),
                 lat,
                 lon,
                 hae,
